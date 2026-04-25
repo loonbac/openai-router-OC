@@ -878,7 +878,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
     },
     config: async (config) => {
       const injectModelsRaw = process.env.OPENCODE_MULTI_AUTH_INJECT_MODELS
-      const injectModels = injectModelsRaw !== '0' && injectModelsRaw !== 'false'
+      const injectModels = injectModelsRaw === '1' || injectModelsRaw === 'true'
       if (!injectModels) return
 
       const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || DEFAULT_LATEST_CODEX_MODEL).trim()
