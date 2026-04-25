@@ -407,6 +407,12 @@ function startInlineRouter(): ServerType {
         if (!localIsSparkModel(normalizedModel)) codexBody.reasoning.summary = 'auto'
       }
       if (localSupportsFastMode(normalizedModel)) codexBody.service_tier = 'priority'
+      if (body.tools && Array.isArray(body.tools) && body.tools.length > 0) {
+        codexBody.tools = body.tools
+      }
+      if (body.tool_choice !== undefined) {
+        codexBody.tool_choice = body.tool_choice
+      }
 
       try {
         const encoder = new TextEncoder()
