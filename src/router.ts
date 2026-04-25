@@ -344,9 +344,16 @@ app.post('/v1/chat/completions', async (c: Context) => {
     for (const msg of messages) {
       if (msg.role === 'system') {
         instructions = msg.content
-      } else {
-        input.push({ role: msg.role, content: msg.content })
+        continue
       }
+      if (msg.role === 'tool') {
+        continue // Codex API doesn't support tool role
+      }
+      if (msg.role === 'assistant' && msg.tool_calls) {
+        input.push({ role: 'assistant', content: msg.content || '' }) // strip tool_calls, default empty content
+        continue
+      }
+      input.push({ role: msg.role, content: msg.content })
     }
 
     const reasoningMatch = body.model?.match(/-(none|low|medium|high|xhigh)$/)

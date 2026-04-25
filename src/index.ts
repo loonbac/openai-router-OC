@@ -123,6 +123,7 @@ function filterInput(input: unknown): unknown {
   if (!Array.isArray(input)) return input
   return input
     .filter((item) => item?.type !== 'item_reference')
+    .filter((item) => item?.role !== 'tool')  // Codex doesn't support tool role
     .map((item) => {
       if (item && typeof item === 'object' && 'id' in item) {
         const { id, ...rest } = item as Record<string, unknown>
@@ -396,8 +397,18 @@ function startInlineRouter(): ServerType {
       let instructions = 'You are a helpful assistant.'
       const input: Array<{ role: string; content: string }> = []
       for (const msg of messages) {
-        if (msg.role === 'system') instructions = msg.content
-        else input.push({ role: msg.role, content: msg.content })
+        if (msg.role === 'system') {
+          instructions = msg.content
+          continue
+        }
+        if (msg.role === 'tool') {
+          continue // Codex API doesn't support tool role
+        }
+        if (msg.role === 'assistant' && msg.tool_calls) {
+          input.push({ role: 'assistant', content: msg.content || '' }) // strip tool_calls, default empty content
+          continue
+        }
+        input.push({ role: msg.role, content: msg.content })
       }
 
       const codexBody: Record<string, any> = { model: normalizedModel, input, instructions, stream: true, store: false }
