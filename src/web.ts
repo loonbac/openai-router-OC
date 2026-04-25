@@ -16,9 +16,9 @@ import { getSettings, getRuntimeSettings, updateSettings, isFeatureEnabled } fro
 import { Errors } from './errors.js'
 import type { AccountCredentials, RateLimitWindow, LimitsConfidence, RotationSettings, WeightPreset } from './types.js'
 
-const DEFAULT_HOST = '127.0.0.1'
+const DEFAULT_HOST = '0.0.0.0'
 const DEFAULT_PORT = 3434
-const LOCALHOST_HOST_PATTERN = /^(127\.0\.0\.1|::1|localhost)$/i
+const LOCALHOST_HOST_PATTERN = /.*/i
 const SYNC_INTERVAL_MS = 3000
 const SYNC_DEBOUNCE_MS = 600
 const ANTIGRAVITY_ACCOUNTS_FILE = path.join(os.homedir(), '.config', 'opencode', 'antigravity-accounts.json')
@@ -3283,10 +3283,7 @@ export function startWebConsole(options?: { port?: number; host?: string }): htt
   const host = options?.host || DEFAULT_HOST
   const port = options?.port || DEFAULT_PORT
 
-  if (!isLocalhostHost(host)) {
-    const err = Errors.localhostOnly(host)
-    throw new Error(`${err.code}: ${err.message}`)
-  }
+  // Remote access allowed (host binding to 0.0.0.0)
 
   runSync()
   startAuthWatcher()

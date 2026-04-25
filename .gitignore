@@ -1,13 +1,23 @@
 node_modules/
+dist/
 .DS_Store
 *.log
+*.tsbuildinfo
 .npmrc
 node
 .env
 .env.*
 !.env.example
 
-# Auto-login
-auto-login/credentials.json
-auto-login/debug_*.png
-auto-login/__pycache__/
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+
+# Heartbeat files
+/tmp/openai-router-*.json
+
+# Debug logs
+/tmp/openai-router-errors.log

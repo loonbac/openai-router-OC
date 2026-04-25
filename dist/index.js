@@ -1,14 +1,19 @@
 import fs from 'node:fs';
-import { syncAuthFromOpenCode } from './auth-sync.js';
-import { createAuthorizationFlow, loginAccount } from './auth.js';
-import { extractRateLimitUpdate, getBlockingRateLimitResetAt, mergeRateLimits, parseRateLimitResetFromError, parseRetryAfterHeader } from './rate-limits.js';
-import { getNextAccount, markAuthInvalid, markModelUnsupported, markRateLimited, markWorkspaceDeactivated } from './rotation.js';
-import { getDefaultModels } from './models.js';
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
+import { Hono } from 'hono';
+import { serve } from '@hono/node-server';
 import { getForceState, isForceActive } from './force-mode.js';
 import { getRuntimeSettings } from './settings.js';
 import { listAccounts, updateAccount, loadStore } from './store.js';
 import { DEFAULT_CONFIG } from './types.js';
 import { Errors } from './errors.js';
+import { startHeartbeat, connectionStart, connectionEnd, getActiveConnections } from './heartbeat.js';
+import { syncAuthFromOpenCode } from './auth-sync.js';
+import { createAuthorizationFlow, loginAccount } from './auth.js';
+import { extractRateLimitUpdate, getBlockingRateLimitResetAt, mergeRateLimits, parseRateLimitResetFromError, parseRetryAfterHeader } from './rate-limits.js';
+import { getNextAccount, markAuthInvalid, markModelUnsupported, markRateLimited, markWorkspaceDeactivated } from './rotation.js';
+import { getDefaultModels } from './models.js';
 const PROVIDER_ID = 'openai';
 const CODEX_BASE_URL = 'https://chatgpt.com/backend-api';
 const REDIRECT_PORT = 1455;
@@ -208,6 +213,337 @@ async function convertSseToJson(response, headers) {
         headers: jsonHeaders
     });
 }
+// ─── Inline Router Server ───────────────────────────────────────────────
+const ROUTER_PORT = Number(process.env.OPENCODE_MULTI_AUTH_ROUTER_PORT || 47990);
+let routerServer = null;
+const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
+function startInlineRouter() {
+    const app = new Hono();
+    let pluginConf = { ...DEFAULT_CONFIG };
+    // Local helpers (avoid duplicate top-level definitions)
+    const localDecodeJWT = (token) => {
+        try {
+            const parts = token.split('.');
+            if (parts.length !== 3)
+                return null;
+            return JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8'));
+        }
+        catch {
+            return null;
+        }
+    };
+    const localNormalizeModel = (model) => {
+        if (!model)
+            return 'gpt-5.1';
+        const modelId = model.includes('/') ? model.split('/').pop() : model;
+        return modelId.replace(/-(?:fast|none|minimal|low|medium|high|xhigh)$/, '');
+    };
+    const localIsSparkModel = (model) => {
+        return typeof model === 'string' && model.startsWith('gpt-5.3-codex-spark');
+    };
+    const localSupportsFastMode = (model) => {
+        return model === 'gpt-5.5' || model === 'gpt-5.4';
+    };
+    function localTransformSSEEvent(codexEvent) {
+        switch (codexEvent.type) {
+            case 'response.output_text.delta': {
+                const chunk = {
+                    id: codexEvent.item_id?.replace('msg_', 'chatcmpl-') || 'chatcmpl-codex',
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: 'gpt-5.4',
+                    choices: [{ index: 0, delta: { content: codexEvent.delta || '' }, finish_reason: null }]
+                };
+                return `data: ${JSON.stringify(chunk)}\n\n`;
+            }
+            case 'response.completed': {
+                const chunk = {
+                    id: 'chatcmpl-codex',
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: 'gpt-5.4',
+                    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+                };
+                return `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`;
+            }
+            case 'response.failed':
+            case 'error': {
+                const err = {
+                    error: {
+                        message: codexEvent.error?.message || codexEvent.message || 'Unknown error',
+                        type: 'server_error',
+                        code: codexEvent.error?.code || 'unknown'
+                    }
+                };
+                return `data: ${JSON.stringify(err)}\n\ndata: [DONE]\n\n`;
+            }
+            default:
+                return null;
+        }
+    }
+    app.use('*', async (c, next) => {
+        connectionStart();
+        try {
+            await next();
+        }
+        finally {
+            connectionEnd();
+        }
+    });
+    app.get('/health', (c) => {
+        const store = loadStore();
+        const now = Date.now();
+        const eligible = Object.values(store.accounts).filter(acc => (!acc.rateLimitedUntil || acc.rateLimitedUntil < now) &&
+            (!acc.modelUnsupportedUntil || acc.modelUnsupportedUntil < now) &&
+            (!acc.workspaceDeactivatedUntil || acc.workspaceDeactivatedUntil < now) &&
+            !acc.authInvalid && acc.enabled !== false);
+        return c.json({ status: 'ok', port: ROUTER_PORT, accounts: eligible.length, connections: getActiveConnections() });
+    });
+    app.post('/v1/chat/completions', async (c) => {
+        let body;
+        try {
+            body = await c.req.json();
+        }
+        catch {
+            return c.json({ error: { message: 'Invalid JSON', type: 'invalid_request_error' } }, 400);
+        }
+        if (!body.model || !body.messages?.length) {
+            return c.json({ error: { message: 'model and messages are required', type: 'invalid_request_error' } }, 400);
+        }
+        const normalizedModel = localNormalizeModel(body.model);
+        const settings = getRuntimeSettings();
+        const effectiveConfig = { ...pluginConf, rotationStrategy: settings.settings.rotationStrategy };
+        const maxAttempts = 5;
+        const triedAliases = new Set();
+        let attempt = 0;
+        while (attempt < maxAttempts) {
+            attempt++;
+            const rotation = await getNextAccount(effectiveConfig, { model: normalizedModel });
+            if (!rotation) {
+                return c.json({ error: Errors.noEligibleAccounts('No available accounts') }, 503);
+            }
+            const { account, token } = rotation;
+            if (triedAliases.has(account.alias))
+                continue;
+            triedAliases.add(account.alias);
+            const decoded = localDecodeJWT(token);
+            const accountId = decoded?.[JWT_CLAIM_PATH]?.chatgpt_account_id;
+            if (!accountId) {
+                return c.json({ error: { code: 'TOKEN_PARSE_ERROR', message: 'Failed to extract accountId' } }, 401);
+            }
+            const messages = body.messages || [];
+            let instructions = 'You are a helpful assistant.';
+            const input = [];
+            for (const msg of messages) {
+                if (msg.role === 'system')
+                    instructions = msg.content;
+                else
+                    input.push({ role: msg.role, content: msg.content });
+            }
+            const codexBody = { model: normalizedModel, input, instructions, stream: true, store: false };
+            const reasoningMatch = body.model?.match(/-(none|low|medium|high|xhigh)$/);
+            if (reasoningMatch?.[1]) {
+                codexBody.reasoning = { effort: reasoningMatch[1] };
+                if (!localIsSparkModel(normalizedModel))
+                    codexBody.reasoning.summary = 'auto';
+            }
+            if (localSupportsFastMode(normalizedModel))
+                codexBody.service_tier = 'priority';
+            try {
+                const encoder = new TextEncoder();
+                let streamEnded = false;
+                const abortController = new AbortController();
+                const stream = new ReadableStream({
+                    start(controller) {
+                        fetch(CODEX_RESPONSES_URL, {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${token}`,
+                                'Content-Type': 'application/json',
+                                'OpenAI-Beta': 'responses=experimental',
+                                'chatgpt-account-id': accountId,
+                                'originator': 'codex_cli_rs',
+                                'Accept': 'text/event-stream'
+                            },
+                            body: JSON.stringify(codexBody),
+                            signal: abortController.signal
+                        }).then(async (res) => {
+                            if (!res.ok) {
+                                const errText = await res.text().catch(() => res.statusText);
+                                if (res.status === 401 || res.status === 403)
+                                    markAuthInvalid(account.alias);
+                                if (res.status === 429)
+                                    markRateLimited(account.alias, Date.now() + 60000);
+                                if (!streamEnded) {
+                                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message: `Codex ${res.status}: ${errText}`, type: 'server_error' } })}\n\ndata: [DONE]\n\n`));
+                                    streamEnded = true;
+                                }
+                                controller.close();
+                                return;
+                            }
+                            if (!res.body) {
+                                controller.close();
+                                return;
+                            }
+                            const reader = res.body.getReader();
+                            const decoder = new TextDecoder();
+                            let buffer = '';
+                            while (true) {
+                                const { done, value } = await reader.read();
+                                if (done)
+                                    break;
+                                buffer += decoder.decode(value, { stream: true });
+                                const parts = buffer.split('\n\n');
+                                buffer = parts.pop() || '';
+                                for (const part of parts) {
+                                    const lines = part.split('\n');
+                                    let eventType = '', eventData = '';
+                                    for (const line of lines) {
+                                        if (line.startsWith('event: '))
+                                            eventType = line.slice(7);
+                                        else if (line.startsWith('data: '))
+                                            eventData = line.slice(6);
+                                    }
+                                    if (eventType && eventData) {
+                                        try {
+                                            const parsed = JSON.parse(eventData);
+                                            const sse = localTransformSSEEvent({ type: eventType, ...parsed });
+                                            if (sse && !streamEnded) {
+                                                controller.enqueue(encoder.encode(sse));
+                                                if (eventType === 'response.completed' || eventType === 'response.failed')
+                                                    streamEnded = true;
+                                            }
+                                        }
+                                        catch { }
+                                    }
+                                }
+                            }
+                            if (!streamEnded)
+                                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                            controller.close();
+                        }).catch((err) => {
+                            if (!streamEnded) {
+                                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message: err.message, type: 'server_error' } })}\n\ndata: [DONE]\n\n`));
+                                streamEnded = true;
+                            }
+                            try {
+                                controller.close();
+                            }
+                            catch { }
+                        });
+                    },
+                    cancel() { abortController.abort(); streamEnded = true; }
+                });
+                c.req.raw.signal?.addEventListener('abort', () => { abortController.abort(); streamEnded = true; });
+                return new Response(stream, {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' }
+                });
+            }
+            catch (err) {
+                const status = err?.status;
+                if (status === 401 || status === 403) {
+                    markAuthInvalid(account.alias);
+                    if (attempt < maxAttempts)
+                        continue;
+                }
+                if (status >= 500) {
+                    if (attempt < maxAttempts)
+                        continue;
+                }
+                throw err;
+            }
+        }
+        return c.json({ error: Errors.maxRetriesExceeded(attempt, Array.from(triedAliases)) }, 502);
+    });
+    startHeartbeat(ROUTER_PORT);
+    const srv = serve({ fetch: app.fetch, port: ROUTER_PORT, hostname: '127.0.0.1' }, () => {
+        console.log(`[openai-router] Router listening on http://127.0.0.1:${ROUTER_PORT}`);
+    });
+    srv.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.log(`[openai-router] Port ${ROUTER_PORT} in use, router not started (another instance running)`);
+        }
+        else {
+            console.error('[openai-router] Router error:', err);
+        }
+    });
+    return srv;
+}
+import { appendFileSync } from 'node:fs';
+const ERROR_LOG = '/tmp/openai-router-errors.log';
+function errorLog(msg) {
+    try {
+        appendFileSync(ERROR_LOG, `[${new Date().toISOString()}] ${msg}\n`);
+    }
+    catch { }
+}
+// ─── Web Dashboard Management ──────────────────────────────────────────────
+const WEB_PORT = Number(process.env.OPENCODE_MULTI_AUTH_WEB_PORT || 3434);
+const WEB_HOST = process.env.OPENCODE_MULTI_AUTH_WEB_HOST || '0.0.0.0';
+let webProcess = null;
+async function checkWebHealth() {
+    try {
+        const res = await fetch(`http://127.0.0.1:${WEB_PORT}/`, {
+            signal: AbortSignal.timeout(500)
+        });
+        return res.ok;
+    }
+    catch {
+        return false;
+    }
+}
+function startWebDashboard() {
+    const webScript = join(__dirname, 'cli.js');
+    errorLog(`Starting web dashboard: ${process.execPath} ${webScript} web --port ${WEB_PORT} --host ${WEB_HOST}`);
+    const child = spawn('node', [webScript, 'web', '--port', String(WEB_PORT), '--host', WEB_HOST], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+        cwd: __dirname,
+        windowsHide: true,
+        env: { ...process.env }
+    });
+    child.unref();
+    child.stdout?.on('data', (d) => {
+        const msg = d.toString().trim();
+        errorLog(`[web stdout] ${msg}`);
+        console.log(`[openai-router:web] ${msg}`);
+    });
+    child.stderr?.on('data', (d) => {
+        const msg = d.toString().trim();
+        errorLog(`[web stderr] ${msg}`);
+        console.error(`[openai-router:web] ${msg}`);
+    });
+    child.on('error', (err) => {
+        errorLog(`[web spawn error] ${err.message}`);
+    });
+    child.on('close', (code) => {
+        errorLog(`[web process exited] code=${code}`);
+    });
+    webProcess = child;
+}
+async function ensureWebRunning() {
+    errorLog('ensureWebRunning: checking if dashboard is already running...');
+    if (await checkWebHealth()) {
+        errorLog('ensureWebRunning: dashboard already running');
+        console.log(`[openai-router] Web dashboard already running on port ${WEB_PORT}`);
+        return;
+    }
+    errorLog('ensureWebRunning: starting dashboard...');
+    console.log(`[openai-router] Starting web dashboard on ${WEB_HOST}:${WEB_PORT}...`);
+    startWebDashboard();
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+        if (await checkWebHealth()) {
+            errorLog('ensureWebRunning: dashboard ready');
+            console.log(`[openai-router] Web dashboard ready on http://${WEB_HOST}:${WEB_PORT}`);
+            return;
+        }
+        await new Promise(r => setTimeout(r, 300));
+    }
+    errorLog('ensureWebRunning: dashboard did not become ready within 5s');
+    console.log('[openai-router] Web dashboard may still be starting...');
+}
 /**
  * Multi-account OAuth plugin for OpenCode
  *
@@ -398,6 +734,15 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
             // ignore
         }
     };
+    // Start inline router
+    try {
+        routerServer = startInlineRouter();
+    }
+    catch (e) {
+        console.log('[openai-router] Router start failed, another instance may be running');
+    }
+    // Start web dashboard
+    await ensureWebRunning();
     return {
         event: async ({ event }) => {
             if (!notifyEnabled)

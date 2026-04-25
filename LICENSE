@@ -1,0 +1,45 @@
+PolyForm Noncommercial License 1.0.0
+
+Copyright (c) 2026 loonbac
+
+PolyForm Noncommercial License 1.0.0
+<https://polyformproject.org/licenses/noncommercial/1.0.0>
+
+This license grants you the following rights:
+
+You may use, copy, modify, and distribute this software for
+noncommercial purposes.
+
+Noncommercial purposes include:
+
+- Personal use
+- Research use
+- Educational use
+- Use by individuals, non-profit organizations, and government agencies
+- Use in open source projects
+- Use in projects that are not primarily intended for commercial advantage
+  or monetary compensation
+
+You may NOT use this software for commercial purposes without a separate
+commercial license from the copyright holder.
+
+Commercial purposes include:
+
+- Selling the software or modifications to it
+- Using the software in a product or service that is sold
+- Using the software to provide a paid service
+- Using the software in a business for internal commercial purposes
+  (other than noncommercial purposes listed above)
+- Using the software for commercial advantage or monetary compensation
+
+To request a commercial license, contact the copyright holder.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+Based on @guard22/opencode-multi-auth-codex (MIT License).

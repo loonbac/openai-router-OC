@@ -13,10 +13,9 @@ import { getRefreshQueueState, startRefreshQueue, stopRefreshQueue } from './ref
 import { getLogPath, logError, logInfo, readLogTail } from './logger.js';
 import { getForceState, activateForce, clearForce, isForceActive, getRemainingForceTimeMs, formatForceDuration } from './force-mode.js';
 import { getSettings, getRuntimeSettings, isFeatureEnabled } from './settings.js';
-import { Errors } from './errors.js';
-const DEFAULT_HOST = '127.0.0.1';
+const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_PORT = 3434;
-const LOCALHOST_HOST_PATTERN = /^(127\.0\.0\.1|::1|localhost)$/i;
+const LOCALHOST_HOST_PATTERN = /.*/i;
 const SYNC_INTERVAL_MS = 3000;
 const SYNC_DEBOUNCE_MS = 600;
 const ANTIGRAVITY_ACCOUNTS_FILE = path.join(os.homedir(), '.config', 'opencode', 'antigravity-accounts.json');
@@ -3083,10 +3082,7 @@ function startAuthWatcher() {
 export function startWebConsole(options) {
     const host = options?.host || DEFAULT_HOST;
     const port = options?.port || DEFAULT_PORT;
-    if (!isLocalhostHost(host)) {
-        const err = Errors.localhostOnly(host);
-        throw new Error(`${err.code}: ${err.message}`);
-    }
+    // Remote access allowed (host binding to 0.0.0.0)
     runSync();
     startAuthWatcher();
     const server = http.createServer(async (req, res) => {
