@@ -375,8 +375,22 @@ app.post('/v1/chat/completions', async (c: Context) => {
     if (supportsFastMode(normalizedModel)) {
       codexBody.service_tier = 'priority'
     }
+    function transformTools(tools: any[]): any[] {
+      return tools.map(tool => {
+        if (tool.type === 'function' && tool.function) {
+          return {
+            type: 'function',
+            name: tool.function.name,
+            description: tool.function.description,
+            parameters: tool.function.parameters,
+            strict: tool.function.strict
+          }
+        }
+        return tool
+      })
+    }
     if (body.tools && Array.isArray(body.tools) && body.tools.length > 0) {
-      codexBody.tools = body.tools
+      codexBody.tools = transformTools(body.tools)
     }
     if (body.tool_choice !== undefined) {
       codexBody.tool_choice = body.tool_choice

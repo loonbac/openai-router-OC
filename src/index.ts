@@ -418,8 +418,22 @@ function startInlineRouter(): ServerType {
         if (!localIsSparkModel(normalizedModel)) codexBody.reasoning.summary = 'auto'
       }
       if (localSupportsFastMode(normalizedModel)) codexBody.service_tier = 'priority'
+      const localTransformTools = (tools: any[]): any[] => {
+        return tools.map(tool => {
+          if (tool.type === 'function' && tool.function) {
+            return {
+              type: 'function',
+              name: tool.function.name,
+              description: tool.function.description,
+              parameters: tool.function.parameters,
+              strict: tool.function.strict
+            }
+          }
+          return tool
+        })
+      }
       if (body.tools && Array.isArray(body.tools) && body.tools.length > 0) {
-        codexBody.tools = body.tools
+        codexBody.tools = localTransformTools(body.tools)
       }
       if (body.tool_choice !== undefined) {
         codexBody.tool_choice = body.tool_choice
