@@ -156,7 +156,66 @@ function transformSSEEvent(codexEvent: { type: string; [key: string]: any }): st
       }
       return `data: ${JSON.stringify(err)}\n\ndata: [DONE]\n\n`
     }
+    case 'response.done': {
+      const chunk = {
+        id: codexEvent.item_id?.replace('msg_', 'chatcmpl-') || 'chatcmpl-codex',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'gpt-5.4',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+      }
+      return `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`
+    }
+    case 'response.function_call_delta': {
+      const chunk = {
+        id: codexEvent.call_id || 'chatcmpl-codex',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'gpt-5.4',
+        choices: [{
+          index: codexEvent.delta_index ?? 0,
+          delta: {
+            tool_calls: [{
+              id: codexEvent.call_id,
+              function: {
+                name: codexEvent.function?.name || '',
+                arguments: codexEvent.function?.arguments || ''
+              },
+              type: 'function'
+            }]
+          },
+          finish_reason: null
+        }]
+      }
+      return `data: ${JSON.stringify(chunk)}\n\n`
+    }
+    case 'response.function_call': {
+      const chunk = {
+        id: codexEvent.call_id || 'chatcmpl-codex',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'gpt-5.4',
+        choices: [{
+          index: codexEvent.delta_index ?? 0,
+          delta: {
+            tool_calls: [{
+              id: codexEvent.call_id,
+              function: {
+                name: codexEvent.function?.name || '',
+                arguments: codexEvent.function?.arguments || ''
+              },
+              type: 'function'
+            }]
+          },
+          finish_reason: null
+        }]
+      }
+      return `data: ${JSON.stringify(chunk)}\n\n`
+    }
     default:
+      if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
+        console.error(`[router] Unknown SSE event: ${codexEvent.type}`)
+      }
       return null
   }
 }
