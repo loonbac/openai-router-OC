@@ -17,8 +17,13 @@ import {
   connectionEnd,
   getIdleTimeMs,
   getActiveConnections,
-  releaseLock
+  releaseLock,
+  readHeartbeat,
+  isHeartbeatStale,
+  HEARTBEAT_PATH,
+  LOCK_PATH
 } from './heartbeat.js'
+import { unlinkSync } from 'node:fs'
 import { syncAuthFromOpenCode } from './auth-sync.js'
 import { createAuthorizationFlow, loginAccount } from './auth.js'
 import {
@@ -41,6 +46,7 @@ const PROVIDER_ID = 'openai'
 const CODEX_BASE_URL = 'https://chatgpt.com/backend-api'
 const REDIRECT_PORT = 1455
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/auth/callback`
+const WATCHER_INTERVAL_MS = 10000
 const URL_PATHS = {
   RESPONSES: '/responses',
   CODEX_RESPONSES: '/codex/responses'
@@ -60,6 +66,8 @@ const JWT_CLAIM_PATH = 'https://api.openai.com/auth'
 const DEFAULT_LATEST_CODEX_MODEL = 'gpt-5.5'
 
 let pluginConfig: PluginConfig = { ...DEFAULT_CONFIG }
+let isRouterClient = false
+let routerClientBaseUrl = ''
 
 function configure(config: Partial<PluginConfig>): void {
   pluginConfig = { ...pluginConfig, ...config }
@@ -686,6 +694,36 @@ function startInlineRouter(): ServerType {
   return srv
 }
 
+function ensureRouterHealthy(): void {
+  const hb = readHeartbeat()
+  if (!hb || isHeartbeatStale(hb)) {
+    // No active router - attempt to start one with jitter to avoid thundering herd
+    console.log('[openai-router] No active router heartbeat, attempting to start...')
+    setTimeout(() => {
+      try {
+        startInlineRouter()
+        isRouterClient = false
+        routerClientBaseUrl = ''
+        console.log('[openai-router] Took over as primary router')
+      } catch (e: any) {
+        if (e?.code === 'EADDRINUSE' || e?.message?.includes('EADDRINUSE')) {
+          console.log('[openai-router] Another instance started first, staying as client')
+        } else {
+          console.error(`[openai-router] Failed to start router: ${e?.message || e}`)
+        }
+      }
+    }, Math.random() * 2000)
+  } else {
+    // Active router exists - become a client if not already
+    const newBaseUrl = `http://127.0.0.1:${hb.port}`
+    if (!isRouterClient || routerClientBaseUrl !== newBaseUrl) {
+      isRouterClient = true
+      routerClientBaseUrl = newBaseUrl
+      console.log(`[openai-router] Connected to router at ${routerClientBaseUrl}`)
+    }
+  }
+}
+
 import { appendFileSync } from 'node:fs'
 const ERROR_LOG = '/tmp/openai-router-errors.log'
 function errorLog(msg: string) {
@@ -972,15 +1010,59 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
     }
   }
 
-  // Start inline router
-  try {
-    routerServer = startInlineRouter()
-  } catch (e) {
-    console.log('[openai-router] Router start failed, another instance may be running')
+  // Start inline router or connect to existing one
+  const tryStartRouter = (): void => {
+    try {
+      routerServer = startInlineRouter()
+      isRouterClient = false
+      routerClientBaseUrl = ''
+      console.log('[openai-router:startup] Started as primary router')
+    } catch (e: any) {
+      if (e?.code === 'EADDRINUSE' || e?.message?.includes('EADDRINUSE')) {
+        // Port in use - check if there's an active router we can connect to
+        const hb = readHeartbeat()
+        if (hb && !isHeartbeatStale(hb)) {
+          routerClientBaseUrl = `http://127.0.0.1:${hb.port}`
+          isRouterClient = true
+          console.log(`[openai-router:startup] Router already active at ${routerClientBaseUrl}, using as client`)
+        } else {
+          // Stale or missing heartbeat — unlink stale files and retry once
+          console.log('[openai-router:startup] Port in use, heartbeat stale — clearing stale files and retrying...')
+          try { unlinkSync(HEARTBEAT_PATH) } catch {}
+          try { unlinkSync(LOCK_PATH) } catch {}
+          try {
+            routerServer = startInlineRouter()
+            isRouterClient = false
+            routerClientBaseUrl = ''
+            console.log('[openai-router:startup] Took over as primary router after clearing stale files')
+          } catch (e2: any) {
+            if (e2?.code === 'EADDRINUSE' || e2?.message?.includes('EADDRINUSE')) {
+              console.log('[openai-router:startup] Another instance started first, staying as client')
+            } else {
+              console.log(`[openai-router:startup] Router start failed: ${e2?.message || e2}`)
+            }
+          }
+        }
+      } else {
+        console.log(`[openai-router:startup] Router start failed: ${e?.message || e}`)
+      }
+    }
   }
 
-  // Start web dashboard
-  await ensureWebRunning()
+  // Initial startup with jitter to avoid thundering herd on restart
+  const init = async (): Promise<void> => {
+    console.log('[openai-router:startup] Initializing...')
+    tryStartRouter()
+    console.log('[openai-router:startup] Starting health watcher...')
+    // Start the health watcher interval
+    const watcherInterval = setInterval(ensureRouterHealthy, WATCHER_INTERVAL_MS)
+    console.log('[openai-router:startup] Starting web dashboard...')
+    await ensureWebRunning()
+    console.log('[openai-router:startup] Initialization complete')
+  }
+
+  // Fire-and-forget init — plugin returns contract immediately
+  void init()
 
   return {
     event: async ({ event }) => {
@@ -1119,6 +1201,14 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           input: Request | string | URL,
           init?: RequestInit
         ): Promise<Response> => {
+          // If we're a client to an external router, proxy all requests there
+          if (isRouterClient && routerClientBaseUrl) {
+            const originalUrl = extractRequestUrl(input)
+            const pathname = new URL(originalUrl).pathname
+            const targetUrl = `${routerClientBaseUrl}${pathname}`
+            return fetch(targetUrl, init)
+          }
+
           await syncAuthFromOpenCode(getAuth)
 
           let body: Record<string, any> = {}

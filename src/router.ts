@@ -62,7 +62,7 @@ const DEFAULT_LATEST_CODEX_MODEL = 'gpt-5.5'
 // ─── Config ────────────────────────────────────────────────────────────
 
 const PORT = Number(process.env.OPENCODE_MULTI_AUTH_ROUTER_PORT || 47990)
-const IDLE_SHUTDOWN_MS = 30_000
+const IDLE_SHUTDOWN_MS = 3600000 // 1 hour
 const DRAIN_TIMEOUT_MS = 10_000
 
 let pluginConfig: PluginConfig = { ...DEFAULT_CONFIG }
@@ -669,8 +669,9 @@ serverInstance = serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, 
 
 serverInstance.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
-    console.log(`[openai-router] Port ${PORT} in use, exiting cleanly`)
-    process.exit(0)
+    console.log(`[openai-router] Port ${PORT} in use, letting plugin handle it`)
+    // Let the plugin handle EADDRINUSE - don't exit here
+    return
   }
   console.error('[openai-router] Server error:', err)
   process.exit(1)

@@ -12,7 +12,7 @@ Add an embedded Hono HTTP server that proxies OpenAI-format requests to Codex AP
 
 The system SHALL start a Hono HTTP server when the plugin loads, and SHALL shut down the server when the plugin terminates.
 
-The router server MUST bind to `127.0.0.1` only (not exposed externally). The default port MUST be `18080` and MUST be configurable via `OPENCODE_MULTI_AUTH_ROUTER_PORT` environment variable.
+The router server MUST bind to `127.0.0.1` only (not exposed externally). The default port MUST be `47990` and MUST be configurable via `OPENCODE_MULTI_AUTH_ROUTER_PORT` environment variable.
 
 #### Scenario: Router starts on plugin initialization
 
@@ -123,32 +123,62 @@ On HTTP status codes `401`, `403`, `429`, or `5xx`, the router MUST call the app
 
 ---
 
-### Requirement: Multi-Instance Heartbeat
+### Requirement: Distributed Singleton Heartbeat
+The system SHALL use a shared heartbeat file at `/tmp/openai-router-heartbeat.json` to coordinate a singleton router instance across multiple user sessions. The files MUST be world-writable (`chmod 666`) to ensure cross-user access.
 
-The system SHALL use a heartbeat file at `/tmp/openai-router-heartbeat.json` to coordinate multiple plugin instances.
-
-The router MUST write a heartbeat entry every 2 seconds containing `{ "pid": <processId>, "port": <listeningPort>, "timestamp": <unixTimestampMs> }`.
+The router MUST write a heartbeat entry every 2 seconds containing `{ "pid": <processId>, "port": <listeningPort>, "timestamp": <unixTimestampMs>, "owner": <userId> }`.
 
 #### Scenario: Passive client when server exists
-
-- GIVEN another instance is already running with a valid heartbeat
+- GIVEN another instance is already running with a valid, healthy heartbeat
 - WHEN this instance initializes
 - THEN this instance SHALL NOT start a new server
 - AND SHALL become a passive client (router functionality disabled)
 
-#### Scenario: Acquire lock and start server
-
-- GIVEN no other instance has a valid heartbeat
+#### Scenario: Acquire lock and take over
+- GIVEN no other instance has a valid, healthy heartbeat
 - WHEN this instance initializes
 - THEN this instance SHALL acquire the lock
 - AND SHALL start the router server on the configured port
 
-#### Scenario: Server self-shuts down after idle
-
+#### Scenario: Server shutdown gated by active sessions
 - GIVEN the router server is running
-- WHEN no requests are received for 30 seconds
-- THEN the server SHALL shut down gracefully
-- AND SHALL remove the heartbeat file
+- WHEN no requests are received for a period
+- THEN the server SHALL check for active user sessions
+- AND SHALL only shut down gracefully if NO OpenCode sessions are active
+- AND SHALL remove the heartbeat file upon shutdown
+
+#### Scenario: Handle stale heartbeat on EADDRINUSE
+- GIVEN a router attempt fails with `EADDRINUSE`
+- AND the heartbeat file indicates a stale process
+- WHEN the plugin attempts to start the router
+- THEN the plugin SHALL remove the stale heartbeat file
+- AND SHALL retry the router start exactly ONCE
+
+---
+
+### Requirement: Plugin Initialization
+The plugin MUST return the contract object to OpenCode immediately upon load, without awaiting router or dashboard startup.
+
+#### Scenario: Plugin returns contract immediately
+- GIVEN the plugin is loading
+- WHEN the plugin starts initialization
+- THEN it MUST return the contract object to OpenCode before starting router or dashboard servers
+
+### Requirement: Startup Logging
+The plugin MUST log the commencement of each startup phase to ensure observability.
+
+#### Scenario: Log startup phases
+- GIVEN the plugin is initializing
+- WHEN the watcher starts, the dashboard starts, or a router attempt begins
+- THEN the plugin MUST log the commencement of each phase
+
+### Requirement: Build Verification
+Every implementation cycle MUST conclude with a successful `npm run build` execution to ensure code integrity.
+
+#### Scenario: Verify build success
+- GIVEN an implementation cycle is complete
+- WHEN the developer or CI runs `npm run build`
+- THEN the command MUST exit with code 0
 
 ---
 
@@ -176,14 +206,7 @@ The system SHALL NOT modify the existing web dashboard functionality. The dashbo
 
 | ID | Criterion | Testable |
 |----|-----------|----------|
-| AC-1 | Router starts on port 18080 by default | `curl http://127.0.0.1:18080/health` |
-| AC-2 | Health endpoint returns status, port, account count | Response body contains all three fields |
-| AC-3 | POST /v1/chat/completions proxies to Codex | Request appears at Codex with correct headers |
-| AC-4 | SSE from Codex is transformed to OpenAI format | Client receives OpenAI-format SSE |
-| AC-5 | 401/403 triggers account invalidation and retry | `markAuthInvalid` called, next account used |
-| AC-6 | 429 triggers rate limit marking and retry | `markRateLimited` called, next account used |
-| AC-7 | Max 3 retry attempts | Third failure returns 502 |
-| AC-8 | Heartbeat file written every 2s | File exists with current pid/timestamp |
-| AC-9 | Passive mode when other instance active | No server started, log message shown |
-| AC-10 | Server self-shuts down after 30s idle | Process exits, heartbeat file removed |
+| AC-1 | Router starts on port 47990 by default | `curl http://127.0.0.1:47990/health` |
+...
+| AC-10 | Server shuts down when no sessions active | Process exits, heartbeat file removed |
 | AC-11 | Dashboard unchanged on port 3434 | Dashboard responds normally |

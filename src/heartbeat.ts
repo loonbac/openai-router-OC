@@ -5,10 +5,10 @@
  * Lock file prevents race conditions when multiple clients try to start server.
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, unlinkSync, existsSync, chmodSync } from 'node:fs'
 
-const HEARTBEAT_PATH = '/tmp/openai-router-heartbeat.json'
-const LOCK_PATH = '/tmp/openai-router-lock.json'
+export const HEARTBEAT_PATH = '/tmp/openai-router-heartbeat.json'
+export const LOCK_PATH = '/tmp/openai-router-lock.json'
 
 const STALE_THRESHOLD_MS = 6000
 
@@ -36,7 +36,10 @@ export function startHeartbeat(port: number): void {
       timestamp: Date.now(),
       connections: activeConnections
     }
-    try { writeFileSync(HEARTBEAT_PATH, JSON.stringify(data)) } catch {}
+    try {
+      writeFileSync(HEARTBEAT_PATH, JSON.stringify(data))
+      try { chmodSync(HEARTBEAT_PATH, 0o666) } catch {}
+    } catch {}
   }
   write()
   heartbeatTimer = setInterval(write, 2000)
@@ -108,6 +111,7 @@ export function tryAcquireLock(): boolean {
     }
     const lock: LockData = { pid: process.pid, timestamp: Date.now() }
     writeFileSync(LOCK_PATH, JSON.stringify(lock))
+    try { chmodSync(LOCK_PATH, 0o666) } catch {}
     return true
   } catch { return false }
 }
