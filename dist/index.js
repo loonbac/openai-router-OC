@@ -1,3 +1,4 @@
+import { log as loggerLog, error as loggerError } from './logger.js';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
@@ -15,6 +16,8 @@ import { createAuthorizationFlow, loginAccount } from './auth.js';
 import { extractRateLimitUpdate, getBlockingRateLimitResetAt, mergeRateLimits, parseRateLimitResetFromError, parseRetryAfterHeader } from './rate-limits.js';
 import { getNextAccount, markAuthInvalid, markModelUnsupported, markRateLimited, markWorkspaceDeactivated } from './rotation.js';
 import { getDefaultModels } from './models.js';
+// Router lifecycle event notifier — assigned inside MultiAuthPlugin closure
+let notifyEvent = async () => { };
 const PROVIDER_ID = 'openai';
 const CODEX_BASE_URL = 'https://chatgpt.com/backend-api';
 const REDIRECT_PORT = 1455;
@@ -151,7 +154,7 @@ function normalizeModel(model) {
             baseModel === 'gpt-5-codex')) {
         const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || DEFAULT_LATEST_CODEX_MODEL).trim();
         if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-            console.log(`[multi-auth] model map: ${baseModel} -> ${latestModel}`);
+            loggerLog(`[multi-auth] model map: ${baseModel} -> ${latestModel}`);
         }
         return latestModel;
     }
@@ -410,7 +413,7 @@ function startInlineRouter() {
             }
             default:
                 if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-                    console.error(`[router] Unknown SSE event: ${codexEvent.type}`);
+                    loggerError(`[router] Unknown SSE event: ${codexEvent.type}`);
                 }
                 return null;
         }
@@ -635,14 +638,14 @@ function startInlineRouter() {
     });
     startHeartbeat(ROUTER_PORT);
     const srv = serve({ fetch: app.fetch, port: ROUTER_PORT, hostname: '127.0.0.1' }, () => {
-        console.log(`[openai-router] Router listening on http://127.0.0.1:${ROUTER_PORT}`);
+        loggerLog(`[openai-router] Router listening on http://127.0.0.1:${ROUTER_PORT}`);
     });
     srv.on('error', (err) => {
         if (err.code === 'EADDRINUSE') {
-            console.log(`[openai-router] Port ${ROUTER_PORT} in use, router not started (another instance running)`);
+            loggerLog(`[openai-router] Port ${ROUTER_PORT} in use, router not started (another instance running)`);
         }
         else {
-            console.error('[openai-router] Router error:', err);
+            loggerError('[openai-router] Router error: ' + err);
         }
     });
     return srv;
@@ -651,20 +654,21 @@ function ensureRouterHealthy() {
     const hb = readHeartbeat();
     if (!hb || isHeartbeatStale(hb)) {
         // No active router - attempt to start one with jitter to avoid thundering herd
-        console.log('[openai-router] No active router heartbeat, attempting to start...');
+        loggerLog('[openai-router] No active router heartbeat, attempting to start...');
         setTimeout(() => {
             try {
                 startInlineRouter();
                 isRouterClient = false;
                 routerClientBaseUrl = '';
-                console.log('[openai-router] Took over as primary router');
+                loggerLog('[openai-router] Took over as primary router');
+                notifyEvent('Took over as primary router', '');
             }
             catch (e) {
                 if (e?.code === 'EADDRINUSE' || e?.message?.includes('EADDRINUSE')) {
-                    console.log('[openai-router] Another instance started first, staying as client');
+                    loggerLog('[openai-router] Another instance started first, staying as client');
                 }
                 else {
-                    console.error(`[openai-router] Failed to start router: ${e?.message || e}`);
+                    loggerError('[openai-router] Failed to start router: ' + (e?.message || e));
                 }
             }
         }, Math.random() * 2000);
@@ -675,7 +679,8 @@ function ensureRouterHealthy() {
         if (!isRouterClient || routerClientBaseUrl !== newBaseUrl) {
             isRouterClient = true;
             routerClientBaseUrl = newBaseUrl;
-            console.log(`[openai-router] Connected to router at ${routerClientBaseUrl}`);
+            loggerLog(`[openai-router] Connected to router at ${routerClientBaseUrl}`);
+            notifyEvent('Connected to router at ' + routerClientBaseUrl, '');
         }
     }
 }
@@ -716,12 +721,12 @@ function startWebDashboard() {
     child.stdout?.on('data', (d) => {
         const msg = d.toString().trim();
         errorLog(`[web stdout] ${msg}`);
-        console.log(`[openai-router:web] ${msg}`);
+        loggerLog(`[openai-router:web] ${msg}`);
     });
     child.stderr?.on('data', (d) => {
         const msg = d.toString().trim();
         errorLog(`[web stderr] ${msg}`);
-        console.error(`[openai-router:web] ${msg}`);
+        loggerError(`[openai-router:web] ${msg}`);
     });
     child.on('error', (err) => {
         errorLog(`[web spawn error] ${err.message}`);
@@ -735,23 +740,23 @@ async function ensureWebRunning() {
     errorLog('ensureWebRunning: checking if dashboard is already running...');
     if (await checkWebHealth()) {
         errorLog('ensureWebRunning: dashboard already running');
-        console.log(`[openai-router] Web dashboard already running on port ${WEB_PORT}`);
+        loggerLog(`[openai-router] Web dashboard already running on port ${WEB_PORT}`);
         return;
     }
     errorLog('ensureWebRunning: starting dashboard...');
-    console.log(`[openai-router] Starting web dashboard on ${WEB_HOST}:${WEB_PORT}...`);
+    loggerLog(`[openai-router] Starting web dashboard on ${WEB_HOST}:${WEB_PORT}...`);
     startWebDashboard();
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
         if (await checkWebHealth()) {
             errorLog('ensureWebRunning: dashboard ready');
-            console.log(`[openai-router] Web dashboard ready on http://${WEB_HOST}:${WEB_PORT}`);
+            loggerLog(`[openai-router] Web dashboard ready on http://${WEB_HOST}:${WEB_PORT}`);
             return;
         }
         await new Promise(r => setTimeout(r, 300));
     }
     errorLog('ensureWebRunning: dashboard did not become ready within 5s');
-    console.log('[openai-router] Web dashboard may still be starting...');
+    loggerLog('[openai-router] Web dashboard may still be starting...');
 }
 /**
  * Multi-account OAuth plugin for OpenCode
@@ -810,7 +815,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
             if (macOpenEnabled && clickUrl && !terminalNotifierPath && !didWarnTerminalNotifier) {
                 didWarnTerminalNotifier = true;
                 if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-                    console.log('[multi-auth] mac click-to-open requires terminal-notifier (brew install terminal-notifier)');
+                    loggerLog('[multi-auth] mac click-to-open requires terminal-notifier (brew install terminal-notifier)');
                 }
             }
             try {
@@ -943,13 +948,43 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
             // ignore
         }
     };
+    /**
+     * Send a notification for router lifecycle events.
+     * Uses the same notifyMac/notifyNtfy infrastructure as session notifications.
+     */
+    const notifyEvent = async (title, message) => {
+        if (!notifyEnabled)
+            return;
+        try {
+            notifyMac(title, message);
+        }
+        catch {
+            // ignore
+        }
+        if (ntfyUrl) {
+            try {
+                const headers = {
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'Title': title,
+                    'Priority': '3'
+                };
+                if (ntfyToken)
+                    headers['Authorization'] = `Bearer ${ntfyToken}`;
+                await fetch(ntfyUrl, { method: 'POST', headers, body: message });
+            }
+            catch {
+                // ignore
+            }
+        }
+    };
     // Start inline router or connect to existing one
     const tryStartRouter = () => {
         try {
             routerServer = startInlineRouter();
             isRouterClient = false;
             routerClientBaseUrl = '';
-            console.log('[openai-router:startup] Started as primary router');
+            loggerLog('[openai-router:startup] Started as primary router');
+            notifyEvent('Took over as primary router', '');
         }
         catch (e) {
             if (e?.code === 'EADDRINUSE' || e?.message?.includes('EADDRINUSE')) {
@@ -958,11 +993,12 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                 if (hb && !isHeartbeatStale(hb)) {
                     routerClientBaseUrl = `http://127.0.0.1:${hb.port}`;
                     isRouterClient = true;
-                    console.log(`[openai-router:startup] Router already active at ${routerClientBaseUrl}, using as client`);
+                    loggerLog(`[openai-router:startup] Router already active at ${routerClientBaseUrl}, using as client`);
+                    notifyEvent('Connected to router at ' + routerClientBaseUrl, '');
                 }
                 else {
                     // Stale or missing heartbeat — unlink stale files and retry once
-                    console.log('[openai-router:startup] Port in use, heartbeat stale — clearing stale files and retrying...');
+                    loggerLog('[openai-router:startup] Port in use, heartbeat stale — clearing stale files and retrying...');
                     try {
                         unlinkSync(HEARTBEAT_PATH);
                     }
@@ -975,33 +1011,37 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                         routerServer = startInlineRouter();
                         isRouterClient = false;
                         routerClientBaseUrl = '';
-                        console.log('[openai-router:startup] Took over as primary router after clearing stale files');
+                        loggerLog('[openai-router:startup] Took over as primary router after clearing stale files');
+                        notifyEvent('Took over as primary router', 'after clearing stale files');
                     }
                     catch (e2) {
                         if (e2?.code === 'EADDRINUSE' || e2?.message?.includes('EADDRINUSE')) {
-                            console.log('[openai-router:startup] Another instance started first, staying as client');
+                            loggerLog('[openai-router:startup] Another instance started first, staying as client');
                         }
                         else {
-                            console.log(`[openai-router:startup] Router start failed: ${e2?.message || e2}`);
+                            loggerLog(`[openai-router:startup] Router start failed: ${e2?.message || e2}`);
+                            loggerError('[openai-router:startup] Router start failed: ' + (e2?.message || e2));
                         }
                     }
                 }
             }
             else {
-                console.log(`[openai-router:startup] Router start failed: ${e?.message || e}`);
+                loggerLog(`[openai-router:startup] Router start failed: ${e?.message || e}`);
+                loggerError('[openai-router:startup] Router start failed: ' + (e?.message || e));
             }
         }
     };
     // Initial startup with jitter to avoid thundering herd on restart
     const init = async () => {
-        console.log('[openai-router:startup] Initializing...');
+        loggerLog('[openai-router:startup] Initializing...');
         tryStartRouter();
-        console.log('[openai-router:startup] Starting health watcher...');
+        loggerLog('[openai-router:startup] Starting health watcher...');
         // Start the health watcher interval
         const watcherInterval = setInterval(ensureRouterHealthy, WATCHER_INTERVAL_MS);
-        console.log('[openai-router:startup] Starting web dashboard...');
+        loggerLog('[openai-router:startup] Starting web dashboard...');
         await ensureWebRunning();
-        console.log('[openai-router:startup] Initialization complete');
+        loggerLog('[openai-router:startup] Initialization complete');
+        void notifyEvent('Initialization complete', '');
     };
     // Fire-and-forget init — plugin returns contract immediately
     void init();
@@ -1105,12 +1145,12 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     }
                 }
                 if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-                    console.log(`[multi-auth] injected runtime models: ${injectedModelIds.join(', ')}`);
+                    loggerLog(`[multi-auth] injected runtime models: ${injectedModelIds.join(', ')}`);
                 }
             }
             catch (err) {
                 if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-                    console.log('[multi-auth] config injection failed:', err);
+                    loggerError('[multi-auth] config injection failed: ' + err);
                 }
             }
         },
@@ -1123,7 +1163,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                 await syncAuthFromOpenCode(getAuth);
                 const accounts = listAccounts();
                 if (accounts.length === 0) {
-                    console.log('[multi-auth] No accounts configured. Run: opencode-multi-auth add <alias>');
+                    loggerLog('[multi-auth] No accounts configured. Run: opencode-multi-auth add <alias>');
                     return {};
                 }
                 const customFetch = async (input, init) => {
@@ -1235,14 +1275,14 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                         if (supportedFastMode) {
                             payload.service_tier = payload.service_tier || 'priority';
                             if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-                                console.log(`[multi-auth] fast mode enabled: ${normalizedModel} + service_tier=priority`);
+                                loggerLog(`[multi-auth] fast mode enabled: ${normalizedModel} + service_tier=priority`);
                             }
                         }
                         else if (fastMode && process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-                            console.log(`[multi-auth] fast mode ignored for unsupported model: ${normalizedModel}`);
+                            loggerLog(`[multi-auth] fast mode ignored for unsupported model: ${normalizedModel}`);
                         }
                         if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1' && payload.service_tier === 'priority') {
-                            console.log(`[multi-auth] priority service tier requested for ${normalizedModel}`);
+                            loggerLog(`[multi-auth] priority service tier requested for ${normalizedModel}`);
                         }
                         delete payload.reasoning_effort;
                         try {

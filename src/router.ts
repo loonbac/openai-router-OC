@@ -9,6 +9,7 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { serve, type ServerType } from '@hono/node-server'
+import { log as loggerLog, error as loggerError } from './logger.js'
 import { loadStore, updateAccount } from './store.js'
 import {
   getNextAccount,
@@ -259,7 +260,7 @@ function transformSSEEvent(codexEvent: { type: string; [key: string]: any }): st
     }
     default:
       if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
-        console.error(`[router] Unknown SSE event: ${codexEvent.type}`)
+        loggerError(`[router] Unknown SSE event: ${codexEvent.type}`)
       }
       return null
   }
@@ -633,7 +634,7 @@ function gracefulShutdown(): void {
   if (isDraining) return
   isDraining = true
 
-  console.log(`[openai-router] Draining ${getActiveConnections()} active connections...`)
+  loggerLog(`[openai-router] Draining ${getActiveConnections()} active connections...`)
   stopHeartbeat()
   releaseLock()
 
@@ -641,7 +642,7 @@ function gracefulShutdown(): void {
   const drainCheck = setInterval(() => {
     if (getActiveConnections() === 0 || Date.now() > drainDeadline) {
       clearInterval(drainCheck)
-      console.log('[openai-router] Shutdown complete')
+      loggerLog('[openai-router] Shutdown complete')
       process.exit(0)
     }
   }, 200)
@@ -654,7 +655,7 @@ process.on('SIGINT', gracefulShutdown)
 setInterval(() => {
   const idle = getIdleTimeMs()
   if (idle > IDLE_SHUTDOWN_MS && getActiveConnections() === 0) {
-    console.log(`[openai-router] Idle for ${Math.round(idle / 1000)}s, shutting down`)
+    loggerLog(`[openai-router] Idle for ${Math.round(idle / 1000)}s, shutting down`)
     gracefulShutdown()
   }
 }, 5000)
@@ -664,15 +665,15 @@ setInterval(() => {
 startHeartbeat(PORT)
 
 serverInstance = serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, () => {
-  console.log(`[openai-router] Listening on http://127.0.0.1:${PORT} (pid: ${process.pid})`)
+  loggerLog(`[openai-router] Listening on http://127.0.0.1:${PORT} (pid: ${process.pid})`)
 })
 
 serverInstance.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
-    console.log(`[openai-router] Port ${PORT} in use, letting plugin handle it`)
+    loggerLog(`[openai-router] Port ${PORT} in use, letting plugin handle it`)
     // Let the plugin handle EADDRINUSE - don't exit here
     return
   }
-  console.error('[openai-router] Server error:', err)
+  loggerError('[openai-router] Server error: ' + err)
   process.exit(1)
 })
