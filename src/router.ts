@@ -166,6 +166,51 @@ function transformSSEEvent(codexEvent: { type: string; [key: string]: any }): st
       }
       return `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`
     }
+    case 'response.output_item.added': {
+      const item = codexEvent.item
+      if (item?.type !== 'function_call') return null
+      const chunk = {
+        id: item.call_id || 'chatcmpl-codex',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'gpt-5.4',
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: codexEvent.output_index ?? 0,
+              id: item.call_id,
+              function: { name: item.name || '', arguments: '' },
+              type: 'function'
+            }]
+          },
+          finish_reason: null
+        }]
+      }
+      return `data: ${JSON.stringify(chunk)}\n\n`
+    }
+    case 'response.function_call_arguments.delta': {
+      const chunk = {
+        id: codexEvent.item_id || 'chatcmpl-codex',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'gpt-5.4',
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: codexEvent.output_index ?? 0,
+              function: { arguments: codexEvent.delta || '' }
+            }]
+          },
+          finish_reason: null
+        }]
+      }
+      return `data: ${JSON.stringify(chunk)}\n\n`
+    }
+    case 'response.function_call_arguments.done': {
+      return null
+    }
     case 'response.function_call_delta': {
       const chunk = {
         id: codexEvent.call_id || 'chatcmpl-codex',
@@ -398,7 +443,7 @@ app.post('/v1/chat/completions', async (c: Context) => {
     // Build Codex request
     const messages = body.messages || []
     let instructions = 'You are a helpful assistant.'
-    const input: Array<{ role: string; content: string }> = []
+    const input: Array<Record<string, any>> = []
 
     for (const msg of messages) {
       if (msg.role === 'system') {
@@ -406,10 +451,25 @@ app.post('/v1/chat/completions', async (c: Context) => {
         continue
       }
       if (msg.role === 'tool') {
-        continue // Codex API doesn't support tool role
+        input.push({
+          type: 'function_call_output',
+          call_id: msg.tool_call_id,
+          output: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+        })
+        continue
       }
       if (msg.role === 'assistant' && msg.tool_calls) {
-        input.push({ role: 'assistant', content: msg.content || '' }) // strip tool_calls, default empty content
+        if (msg.content) {
+          input.push({ role: 'assistant', content: msg.content })
+        }
+        for (const tc of msg.tool_calls) {
+          input.push({
+            type: 'function_call',
+            call_id: tc.id,
+            name: tc.function?.name || '',
+            arguments: tc.function?.arguments || '{}'
+          })
+        }
         continue
       }
       input.push({ role: msg.role, content: msg.content })

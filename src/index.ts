@@ -123,14 +123,38 @@ function filterInput(input: unknown): unknown {
   if (!Array.isArray(input)) return input
   return input
     .filter((item) => item?.type !== 'item_reference')
-    .filter((item) => item?.role !== 'tool')  // Codex doesn't support tool role
     .map((item) => {
+      // Convert OpenAI tool role to Codex function_call_output
+      if (item && typeof item === 'object' && item.role === 'tool') {
+        return {
+          type: 'function_call_output',
+          call_id: item.tool_call_id,
+          output: typeof item.content === 'string' ? item.content : JSON.stringify(item.content)
+        }
+      }
+      // Convert assistant tool_calls to Codex function_call items
+      if (item && typeof item === 'object' && item.role === 'assistant' && item.tool_calls) {
+        const results: any[] = []
+        if (item.content) {
+          results.push({ role: 'assistant', content: item.content })
+        }
+        for (const tc of item.tool_calls) {
+          results.push({
+            type: 'function_call',
+            call_id: tc.id,
+            name: tc.function?.name || '',
+            arguments: tc.function?.arguments || '{}'
+          })
+        }
+        return results
+      }
       if (item && typeof item === 'object' && 'id' in item) {
         const { id, ...rest } = item as Record<string, unknown>
         return rest
       }
       return item
     })
+    .flat()
 }
 
 function normalizeModel(model: string | undefined): string {
@@ -349,6 +373,51 @@ function startInlineRouter(): ServerType {
         }
         return `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`
       }
+      case 'response.output_item.added': {
+        const item = codexEvent.item
+        if (item?.type !== 'function_call') return null
+        const chunk = {
+          id: item.call_id || 'chatcmpl-codex',
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: 'gpt-5.4',
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                index: codexEvent.output_index ?? 0,
+                id: item.call_id,
+                function: { name: item.name || '', arguments: '' },
+                type: 'function'
+              }]
+            },
+            finish_reason: null
+          }]
+        }
+        return `data: ${JSON.stringify(chunk)}\n\n`
+      }
+      case 'response.function_call_arguments.delta': {
+        const chunk = {
+          id: codexEvent.item_id || 'chatcmpl-codex',
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: 'gpt-5.4',
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                index: codexEvent.output_index ?? 0,
+                function: { arguments: codexEvent.delta || '' }
+              }]
+            },
+            finish_reason: null
+          }]
+        }
+        return `data: ${JSON.stringify(chunk)}\n\n`
+      }
+      case 'response.function_call_arguments.done': {
+        return null
+      }
       case 'response.function_call_delta': {
         const chunk = {
           id: codexEvent.call_id || 'chatcmpl-codex',
@@ -454,17 +523,32 @@ function startInlineRouter(): ServerType {
 
       const messages = body.messages || []
       let instructions = 'You are a helpful assistant.'
-      const input: Array<{ role: string; content: string }> = []
+      const input: Array<Record<string, any>> = []
       for (const msg of messages) {
         if (msg.role === 'system') {
           instructions = msg.content
           continue
         }
         if (msg.role === 'tool') {
-          continue // Codex API doesn't support tool role
+          input.push({
+            type: 'function_call_output',
+            call_id: msg.tool_call_id,
+            output: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+          })
+          continue
         }
         if (msg.role === 'assistant' && msg.tool_calls) {
-          input.push({ role: 'assistant', content: msg.content || '' }) // strip tool_calls, default empty content
+          if (msg.content) {
+            input.push({ role: 'assistant', content: msg.content })
+          }
+          for (const tc of msg.tool_calls) {
+            input.push({
+              type: 'function_call',
+              call_id: tc.id,
+              name: tc.function?.name || '',
+              arguments: tc.function?.arguments || '{}'
+            })
+          }
           continue
         }
         input.push({ role: msg.role, content: msg.content })

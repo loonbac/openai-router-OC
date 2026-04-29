@@ -99,12 +99,37 @@ function filterInput(input) {
     return input
         .filter((item) => item?.type !== 'item_reference')
         .map((item) => {
+        // Convert OpenAI tool role to Codex function_call_output
+        if (item && typeof item === 'object' && item.role === 'tool') {
+            return {
+                type: 'function_call_output',
+                call_id: item.tool_call_id,
+                output: typeof item.content === 'string' ? item.content : JSON.stringify(item.content)
+            };
+        }
+        // Convert assistant tool_calls to Codex function_call items
+        if (item && typeof item === 'object' && item.role === 'assistant' && item.tool_calls) {
+            const results = [];
+            if (item.content) {
+                results.push({ role: 'assistant', content: item.content });
+            }
+            for (const tc of item.tool_calls) {
+                results.push({
+                    type: 'function_call',
+                    call_id: tc.id,
+                    name: tc.function?.name || '',
+                    arguments: tc.function?.arguments || '{}'
+                });
+            }
+            return results;
+        }
         if (item && typeof item === 'object' && 'id' in item) {
             const { id, ...rest } = item;
             return rest;
         }
         return item;
-    });
+    })
+        .flat();
 }
 function normalizeModel(model) {
     if (!model)
@@ -277,7 +302,112 @@ function startInlineRouter() {
                 };
                 return `data: ${JSON.stringify(err)}\n\ndata: [DONE]\n\n`;
             }
+            case 'response.done': {
+                const chunk = {
+                    id: codexEvent.item_id?.replace('msg_', 'chatcmpl-') || 'chatcmpl-codex',
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: 'gpt-5.4',
+                    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+                };
+                return `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`;
+            }
+            case 'response.output_item.added': {
+                const item = codexEvent.item;
+                if (item?.type !== 'function_call')
+                    return null;
+                const chunk = {
+                    id: item.call_id || 'chatcmpl-codex',
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: 'gpt-5.4',
+                    choices: [{
+                            index: 0,
+                            delta: {
+                                tool_calls: [{
+                                        index: codexEvent.output_index ?? 0,
+                                        id: item.call_id,
+                                        function: { name: item.name || '', arguments: '' },
+                                        type: 'function'
+                                    }]
+                            },
+                            finish_reason: null
+                        }]
+                };
+                return `data: ${JSON.stringify(chunk)}\n\n`;
+            }
+            case 'response.function_call_arguments.delta': {
+                const chunk = {
+                    id: codexEvent.item_id || 'chatcmpl-codex',
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: 'gpt-5.4',
+                    choices: [{
+                            index: 0,
+                            delta: {
+                                tool_calls: [{
+                                        index: codexEvent.output_index ?? 0,
+                                        function: { arguments: codexEvent.delta || '' }
+                                    }]
+                            },
+                            finish_reason: null
+                        }]
+                };
+                return `data: ${JSON.stringify(chunk)}\n\n`;
+            }
+            case 'response.function_call_arguments.done': {
+                return null;
+            }
+            case 'response.function_call_delta': {
+                const chunk = {
+                    id: codexEvent.call_id || 'chatcmpl-codex',
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: 'gpt-5.4',
+                    choices: [{
+                            index: codexEvent.delta_index ?? 0,
+                            delta: {
+                                tool_calls: [{
+                                        id: codexEvent.call_id,
+                                        function: {
+                                            name: codexEvent.function?.name || '',
+                                            arguments: codexEvent.function?.arguments || ''
+                                        },
+                                        type: 'function'
+                                    }]
+                            },
+                            finish_reason: null
+                        }]
+                };
+                return `data: ${JSON.stringify(chunk)}\n\n`;
+            }
+            case 'response.function_call': {
+                const chunk = {
+                    id: codexEvent.call_id || 'chatcmpl-codex',
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: 'gpt-5.4',
+                    choices: [{
+                            index: codexEvent.delta_index ?? 0,
+                            delta: {
+                                tool_calls: [{
+                                        id: codexEvent.call_id,
+                                        function: {
+                                            name: codexEvent.function?.name || '',
+                                            arguments: codexEvent.function?.arguments || ''
+                                        },
+                                        type: 'function'
+                                    }]
+                            },
+                            finish_reason: null
+                        }]
+                };
+                return `data: ${JSON.stringify(chunk)}\n\n`;
+            }
             default:
+                if (process.env.OPENCODE_MULTI_AUTH_DEBUG === '1') {
+                    console.error(`[router] Unknown SSE event: ${codexEvent.type}`);
+                }
                 return null;
         }
     }
@@ -335,10 +465,33 @@ function startInlineRouter() {
             let instructions = 'You are a helpful assistant.';
             const input = [];
             for (const msg of messages) {
-                if (msg.role === 'system')
+                if (msg.role === 'system') {
                     instructions = msg.content;
-                else
-                    input.push({ role: msg.role, content: msg.content });
+                    continue;
+                }
+                if (msg.role === 'tool') {
+                    input.push({
+                        type: 'function_call_output',
+                        call_id: msg.tool_call_id,
+                        output: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+                    });
+                    continue;
+                }
+                if (msg.role === 'assistant' && msg.tool_calls) {
+                    if (msg.content) {
+                        input.push({ role: 'assistant', content: msg.content });
+                    }
+                    for (const tc of msg.tool_calls) {
+                        input.push({
+                            type: 'function_call',
+                            call_id: tc.id,
+                            name: tc.function?.name || '',
+                            arguments: tc.function?.arguments || '{}'
+                        });
+                    }
+                    continue;
+                }
+                input.push({ role: msg.role, content: msg.content });
             }
             const codexBody = { model: normalizedModel, input, instructions, stream: true, store: false };
             const reasoningMatch = body.model?.match(/-(none|low|medium|high|xhigh)$/);
@@ -349,6 +502,26 @@ function startInlineRouter() {
             }
             if (localSupportsFastMode(normalizedModel))
                 codexBody.service_tier = 'priority';
+            const localTransformTools = (tools) => {
+                return tools.map(tool => {
+                    if (tool.type === 'function' && tool.function) {
+                        return {
+                            type: 'function',
+                            name: tool.function.name,
+                            description: tool.function.description,
+                            parameters: tool.function.parameters,
+                            strict: tool.function.strict
+                        };
+                    }
+                    return tool;
+                });
+            };
+            if (body.tools && Array.isArray(body.tools) && body.tools.length > 0) {
+                codexBody.tools = localTransformTools(body.tools);
+            }
+            if (body.tool_choice !== undefined) {
+                codexBody.tool_choice = body.tool_choice;
+            }
             try {
                 const encoder = new TextEncoder();
                 let streamEnded = false;
@@ -806,7 +979,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
         },
         config: async (config) => {
             const injectModelsRaw = process.env.OPENCODE_MULTI_AUTH_INJECT_MODELS;
-            const injectModels = injectModelsRaw !== '0' && injectModelsRaw !== 'false';
+            const injectModels = injectModelsRaw === '1' || injectModelsRaw === 'true';
             if (!injectModels)
                 return;
             const latestModel = (process.env.OPENCODE_MULTI_AUTH_CODEX_LATEST_MODEL || DEFAULT_LATEST_CODEX_MODEL).trim();
