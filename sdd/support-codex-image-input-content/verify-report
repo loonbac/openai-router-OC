@@ -1,0 +1,189 @@
+## Verification Report
+
+**Change**: support-codex-image-input-content
+**Version**: N/A
+**Mode**: Strict TDD
+
+---
+
+### Completeness
+
+| Metric | Value |
+|--------|-------|
+| Tasks total | 8 |
+| Tasks complete | 8 |
+| Tasks incomplete | 0 |
+
+All tasks complete. No remaining work.
+
+---
+
+### Build & Tests Execution
+
+**Type check**: ✅ Passed
+```
+tsc --noEmit: no errors
+```
+
+**Tests**: ✅ 19 passed / ❌ 0 failed / ⚠️ 0 skipped
+```
+PASS tests/unit/content-transform.test.ts
+  mapContentToCodex
+    string content
+      ✓ user string maps to input_text
+      ✓ assistant string maps to output_text
+    user array content
+      ✓ text-only array maps to input_text parts
+      ✓ text+image array preserves order
+      ✓ image-only array maps to input_image
+      ✓ drops unknown part types
+    assistant array content
+      ✓ text-only array maps to output_text
+      ✓ image parts are safely dropped
+      ✓ image-only array yields empty content array
+    safety
+      ✓ never produces text field with an array value
+  contentToString
+    ✓ string passthrough
+    ✓ text-part concatenation
+    ✓ non-text parts are skipped
+    ✓ empty array yields empty string
+  looksLikeOpenAIContentArray
+    ✓ returns true for OpenAI text parts
+    ✓ returns true for OpenAI image parts
+    ✓ returns false for Codex parts
+    ✓ returns false for string
+    ✓ returns false for empty array
+
+Test Suites: 1 passed, 1 total
+Tests:       19 passed, 19 total
+```
+
+**Coverage**: ➖ Not available (no coverage tool configured in project)
+
+---
+
+### TDD Compliance
+
+| Check | Result | Details |
+|-------|--------|---------|
+| TDD Evidence reported | ✅ | Found in apply-progress with cycle evidence table |
+| All tasks have tests | ✅ | 2/2 task rows with test files |
+| RED confirmed (tests exist) | ✅ | `tests/unit/content-transform.test.ts` verified on disk |
+| GREEN confirmed (tests pass) | ✅ | 19/19 tests pass on execution |
+| Triangulation adequate | ✅ | Task 1.1: 16 cases across 3 functions; Task 2.1-2.5: covered via shared helper tests |
+| Safety Net for modified files | ⚠️ | 14/14 reported for Phase 2 tasks — cannot independently verify (no prior test suite to snapshot) |
+
+**TDD Compliance**: 5/6 checks passed (Safety Net verification impossible without prior test baseline)
+
+---
+
+### Test Layer Distribution
+
+| Layer | Tests | Files | Tools |
+|-------|-------|-------|-------|
+| Unit | 19 | 1 | Jest 29.7.0 + ts-jest |
+| Integration | 0 | 0 | not installed |
+| E2E | 0 | 0 | not installed |
+| **Total** | **19** | **1** | |
+
+---
+
+### Changed File Coverage
+
+Coverage analysis skipped — no coverage tool detected.
+
+---
+
+### Assertion Quality
+
+✅ All assertions verify real behavior. No tautologies, ghost loops, smoke-only tests, or implementation-detail coupling found.
+
+Detailed scan results:
+- 19 assertions across 19 test cases
+- Zero `expect(true).toBe(true)` or tautologies
+- Zero type-only assertions (`toBeDefined` without companion value check)
+- Zero mock-heavy or implementation-detail tests
+- Empty-result test (`toEqual([])`) is spec-required scenario with companion non-empty test (assistant image-only → empty vs user image-only → non-empty)
+- `for` loop assertion on line 99 is guarded by `toHaveLength(2)` check on line 104 — no ghost loop risk
+
+**Assertion quality**: ✅ All assertions verify real behavior
+
+---
+
+### Quality Metrics
+
+**Linter**: ➖ Not available (ESLint not installed in project)
+**Type Checker**: ✅ No errors (`tsc --noEmit` clean)
+
+---
+
+### Spec Compliance Matrix
+
+| Requirement | Scenario | Test | Result |
+|-------------|----------|------|--------|
+| String content produces existing mapping | String user content maps to input_text | `tests/unit/content-transform.test.ts` > `user string maps to input_text` | ✅ COMPLIANT |
+| String content produces existing mapping | String assistant content maps to output_text | `tests/unit/content-transform.test.ts` > `assistant string maps to output_text` | ✅ COMPLIANT |
+| String content produces existing mapping | String assistant with tool_calls maps to output_text | `tests/unit/content-transform.test.ts` > `assistant string maps to output_text` (content part) + code in index.ts/router.ts message loops (tool_calls expansion — pre-existing, unchanged) | ⚠️ PARTIAL |
+| User array content transforms to input parts | User text-only array maps to input_text parts | `tests/unit/content-transform.test.ts` > `text-only array maps to input_text parts` | ✅ COMPLIANT |
+| User array content transforms to input parts | User text+image array preserves order | `tests/unit/content-transform.test.ts` > `text+image array preserves order` | ✅ COMPLIANT |
+| User array content transforms to input parts | User image-only array | `tests/unit/content-transform.test.ts` > `image-only array maps to input_image` | ✅ COMPLIANT |
+| Assistant array content never becomes text array | Assistant text-only array maps to output_text | `tests/unit/content-transform.test.ts` > `text-only array maps to output_text` | ✅ COMPLIANT |
+| Assistant array content never becomes text array | Assistant image parts are safely dropped | `tests/unit/content-transform.test.ts` > `image parts are safely dropped` | ✅ COMPLIANT |
+| Assistant array content never becomes text array | Assistant array with no text parts yields empty content array | `tests/unit/content-transform.test.ts` > `image-only array yields empty content array` | ✅ COMPLIANT |
+| System array content flattens to string | System text-only array flattens to string | `tests/unit/content-transform.test.ts` > `text-part concatenation` | ✅ COMPLIANT |
+| System array content flattens to string | System array with non-text parts skips them | `tests/unit/content-transform.test.ts` > `non-text parts are skipped` | ✅ COMPLIANT |
+| No payload contains `text: <array>` | Array content never leaks into text field | `tests/unit/content-transform.test.ts` > `never produces text field with an array value` | ✅ COMPLIANT |
+| Both index.ts and router.ts behave identically | Same input yields same output from both files | (structural parity via shared `mapContentToCodex`/`contentToString` imports + identical call patterns in both message loops) | ⚠️ PARTIAL |
+
+**Compliance summary**: 11/13 scenarios ✅ COMPLIANT, 2/13 ⚠️ PARTIAL
+
+---
+
+### Correctness (Static — Structural Evidence)
+
+| Requirement | Status | Notes |
+|------------|--------|-------|
+| String content preserves existing mapping | ✅ Implemented | `mapContentToCodex(string, role)` returns `[{type: output_text/input_text, text}]` |
+| User array content transforms to input parts | ✅ Implemented | Text→input_text, image→input_image with detail:auto, preserves order, unknown types dropped |
+| Assistant array content never becomes text array | ✅ Implemented | Text→output_text, images dropped (`role !== 'assistant'` guard), empty array for image-only |
+| System array content flattens to string | ✅ Implemented | `contentToString` concatenates text parts, skips non-text, empty array→empty string |
+| No `text: <array>` in payload | ✅ Implemented | All output items have `text?: string`; arrays are decomposed into individual items |
+| Both files behave identically | ✅ Implemented | Identical call patterns in both message loops (L543-575 in index.ts, L450-482 in router.ts); shared `content-transform.ts` helper guarantees output parity |
+| filterInput backward-compatibility | ✅ Implemented | `looksLikeOpenAIContentArray` guard prevents double-transforming Codex-formatted content (L152 in index.ts) |
+
+---
+
+### Coherence (Design)
+
+| Decision | Followed? | Notes |
+|----------|-----------|-------|
+| Shared helper module (`src/content-transform.ts`) | ✅ Yes | Created as specified, exports `mapContentToCodex`, `contentToString`, `looksLikeOpenAIContentArray`, and types |
+| Import into index.ts | ✅ Yes | `mapContentToCodex`, `contentToString`, `looksLikeOpenAIContentArray` imported at L45 |
+| Import into router.ts | ✅ Yes | `mapContentToCodex`, `contentToString` imported at L23 |
+| Design artifact | N/A | Design artifact was missing per apply-progress; implementation followed spec and tasks directly |
+
+No design deviations detected. The `looksLikeOpenAIContentArray` guard (`filterInput` only) is a defensive addition beyond the spec that correctly protects the existing Codex input path from re-transformation.
+
+---
+
+### Issues Found
+
+**CRITICAL** (must fix before archive):
+None
+
+**WARNING** (should fix):
+1. **Parity scenario lacks explicit behavioral test** — The spec requires "Same input yields same output from both files." Parity is guaranteed by shared code, but there is no test that exercises both `src/index.ts` and `src/router.ts` with identical multimodal input and asserts byte-identical output. Structural parity via shared helper is a valid engineering guarantee, but doesn't satisfy strict behavioral verification.
+2. **Tool_calls expansion in message loop untested for content mapping** — The "String assistant content with tool_calls still maps to output_text" scenario specifies that each tool_call becomes a separate `function_call` item. The content mapping is tested (`mapContentToCodex('...' , 'assistant')` → `output_text`), but the full integrated transformation (assistant message with `content: "Calling tool..."` AND `tool_calls: [...]` producing both `output_text` + `function_call` items) has no dedicated test. This is pre-existing behavior the change doesn't alter — the spec documents it for context.
+
+**SUGGESTION** (nice to have):
+1. **Add coverage tool** — The project has no coverage tool configured. Consider adding `nyc` or `jest --coverage` to get line/branch coverage metrics for changed files.
+2. **Fix jest.config.js deprecation** — ts-jest warns: `"isolatedModules" is deprecated and will be removed in v30.0.0`. Move `isolatedModules: true` to `tsconfig.json` instead of keeping it in jest.config.js.
+
+---
+
+### Verdict
+
+**PASS WITH WARNINGS**
+
+All 8 tasks complete. All 19 tests pass. Type check clean. 11 out of 13 spec scenarios have explicit behavioral tests with passing results. The 2 partial scenarios (tool_calls expansion, parity) are structurally guaranteed by design — shared helper code + identical call patterns ensure correct behavior without dedicated tests. No CRITICAL issues block archive.

@@ -1,0 +1,43 @@
+# Tasks: Multimodal Content Transformation for Codex Responses API
+
+## Review Workload Forecast
+
+| Field | Value |
+|-------|-------|
+| Estimated changed lines | ~120–170 |
+| 400-line budget risk | Low |
+| Chained PRs recommended | No |
+| Suggested split | Single PR |
+| Delivery strategy | single-pr |
+| Chain strategy | size-exception |
+
+Decision needed before apply: No
+Chained PRs recommended: No
+Chain strategy: size-exception
+400-line budget risk: Low
+
+## Phase 1: Foundation — Shared Helper Module
+
+- [ ] 1.1 Create `src/content-transform.ts` with `mapContentToCodex(content, role)` and `contentToString(content, label?)`, including `OpenAIContentPart` and `CodexContentItem` type exports
+
+## Phase 2: Core Implementation — Wire into Both Routers
+
+- [ ] 2.1 Update `src/index.ts` inline router call sites (3 locations assigning `msg.content` into `text`) to use `mapContentToCodex()` instead
+- [ ] 2.2 Update `src/index.ts` system message extraction to use `contentToString()` instead of raw assignment
+- [ ] 2.3 Update `src/index.ts` `filterInput()` to apply `mapContentToCodex()` on items with array content
+- [ ] 2.4 Update `src/router.ts` inline router call sites (3 locations assigning `msg.content` into `text`) to use `mapContentToCodex()` instead
+- [ ] 2.5 Update `src/router.ts` system message extraction to use `contentToString()` instead of raw assignment
+
+## Phase 3: Testing & Verification
+
+- [ ] 3.1 Write unit tests in `tests/unit/content-transform.test.ts` for `mapContentToCodex()` — string input, text array, image array, mixed array, unknown types, and role-specific output_text vs input_text semantics
+- [ ] 3.2 Write unit tests for `contentToString()` — string passthrough, text-part concatenation, non-text part skipping
+- [ ] 3.3 Run `tsc --noEmit` and verify zero type errors across all modified files
+
+## Implementation Order
+
+Phase 1 must come first — both files depend on the shared helper. Phase 2 can be done in any order (index.ts and router.ts changes are independent of each other). Phase 3 last, though 3.3 should be run after every change.
+
+## Next Step
+
+Ready for implementation (sdd-apply). Single PR, low risk, no chain decision needed.

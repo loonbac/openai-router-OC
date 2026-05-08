@@ -1,0 +1,138 @@
+# Specification: Multimodal Content Transformation for Codex Responses API
+
+## Purpose
+
+The router transforms OpenAI chat messages into Codex Responses API `input` items.
+Currently, `msg.content` is assumed to be a string, causing Codex to reject multimodal
+messages (where content is an array of text/image parts). This spec defines the
+transformation rules for array content while preserving existing string behavior.
+
+## Requirements
+
+### Requirement: String content preserves existing mapping
+
+The system MUST map string `msg.content` identically to current behavior for all roles.
+
+#### Scenario: String user content maps to input_text
+
+- GIVEN a message with `role: "user"` and `content: "hello"`
+- WHEN the router builds the Codex input array
+- THEN it produces `{ role: "user", content: [{ type: "input_text", text: "hello" }] }`
+
+#### Scenario: String assistant content maps to output_text
+
+- GIVEN a message with `role: "assistant"` and `content: "Hello!"`
+- WHEN the router builds the Codex input array
+- THEN it produces `{ role: "assistant", content: [{ type: "output_text", text: "Hello!" }] }`
+
+#### Scenario: String assistant content with tool_calls still maps to output_text
+
+- GIVEN a message with `role: "assistant"`, `content: "Calling tool..."`, and `tool_calls: [...]`
+- WHEN the router builds the Codex input array
+- THEN the content item is `{ role: "assistant", content: [{ type: "output_text", text: "Calling tool..." }] }`
+- AND each tool_call becomes a separate `{ type: "function_call", ... }` item
+
+### Requirement: User array content transforms to input parts
+
+When `msg.content` is an array and `msg.role` is `"user"`, the system MUST transform
+each content part individually, preserving part order.
+
+#### Scenario: User text-only array maps to input_text parts
+
+- GIVEN a message with `role: "user"` and `content: [{ type: "text", text: "hello" }, { type: "text", text: "world" }]`
+- WHEN the router builds the Codex input array
+- THEN it produces `{ role: "user", content: [{ type: "input_text", text: "hello" }, { type: "input_text", text: "world" }] }`
+
+#### Scenario: User text+image array preserves order
+
+- GIVEN a message with `role: "user"` and `content: [{ type: "text", text: "what is this" }, { type: "image_url", image_url: { url: "data:image/..." } }]`
+- WHEN the router builds the Codex input array
+- THEN it produces `{ role: "user", content: [{ type: "input_text", text: "what is this" }, { type: "input_image", image_url: { url: "data:image/..." }, detail: "auto" }] }`
+- AND the order of parts is preserved
+
+#### Scenario: User image-only array
+
+- GIVEN a message with `role: "user"` and `content: [{ type: "image_url", image_url: { url: "https://example.com/pic.jpg" } }]`
+- WHEN the router builds the Codex input array
+- THEN it produces `{ role: "user", content: [{ type: "input_image", image_url: { url: "https://example.com/pic.jpg" }, detail: "auto" }] }`
+
+### Requirement: Assistant array content never becomes text array
+
+When `msg.content` is an array and `msg.role` is `"assistant"`, the system MUST
+only extract `type: "text"` parts into `output_text` and safely drop unsupported
+part types. No array may be placed directly into the `text` field.
+
+#### Scenario: Assistant text-only array maps to output_text
+
+- GIVEN a message with `role: "assistant"` and `content: [{ type: "text", text: "Sure!" }]`
+- WHEN the router builds the Codex input array
+- THEN it produces `{ role: "assistant", content: [{ type: "output_text", text: "Sure!" }] }`
+
+#### Scenario: Assistant image parts are safely dropped
+
+- GIVEN a message with `role: "assistant"` and `content: [{ type: "text", text: "result: " }, { type: "image_url", image_url: { url: "data:..." } }]`
+- WHEN the router builds the Codex input array
+- THEN it produces `{ role: "assistant", content: [{ type: "output_text", text: "result: " }] }`
+- AND the image part is NOT included in the output
+
+#### Scenario: Assistant array with no text parts yields empty content array
+
+- GIVEN a message with `role: "assistant"` and `content: [{ type: "image_url", image_url: { url: "data:..." } }]`
+- WHEN the router builds the Codex input array
+- THEN it produces `{ role: "assistant", content: [] }`
+- AND no `text` field contains an array value
+
+### Requirement: System array content flattens to string
+
+When `msg.content` is an array, the system message MUST be flattened to a string
+by concatenating text parts. Non-text parts in system content MUST be skipped.
+
+#### Scenario: System text-only array flattens to string
+
+- GIVEN a message with `role: "system"` and `content: [{ type: "text", text: "You are" }, { type: "text", text: " helpful" }]`
+- WHEN the router extracts instructions
+- THEN `instructions` becomes `"You are helpful"`
+
+#### Scenario: System array with non-text parts skips them
+
+- GIVEN a message with `role: "system"` and `content: [{ type: "text", text: "Be concise." }, { type: "image_url", image_url: { url: "x" } }]`
+- WHEN the router extracts instructions
+- THEN `instructions` becomes `"Be concise."`
+- AND the image part is not included
+
+### Requirement: No payload contains `text: <array>`
+
+The system MUST NEVER produce a Codex payload where any content item's `text`
+field holds an array value. All `text` fields MUST hold a string or be absent.
+
+#### Scenario: Array content never leaks into text field
+
+- GIVEN a message with `content: [{ type: "text", text: "a" }, { type: "text", text: "b" }]`
+- WHEN the router processes the message
+- THEN the resulting payload MUST NOT have any `"text": [...]` entry
+- AND every non-string content array is decomposed into separate content items
+
+### Requirement: Both index.ts and router.ts behave identically
+
+The transformation logic in `src/index.ts` and `src/router.ts` MUST produce
+identical output for any given input message. Shared transformation code
+SHOULD be extracted to a common helper to guarantee parity.
+
+#### Scenario: Same input yields same output from both files
+
+- GIVEN a multimodal message array `[{ type: "text", text: "hi" }, { type: "image_url", image_url: { url: "data:img/png;base64,..." } }]`
+- WHEN both files process the same input
+- THEN the Codex input items produced are byte-identical
+
+## Summary
+
+| Area | Requirement | Scenarios |
+|------|------------|-----------|
+| String content | Preserve existing mapping | 3 |
+| User array content | Transform text→input_text, image→input_image, preserve order | 3 |
+| Assistant array content | Text only → output_text, drop images safely | 3 |
+| System array content | Flatten text parts to string | 2 |
+| Safety | No `text: <array>` in payload | 1 |
+| Parity | Both files produce identical output | 1 |
+
+**Total**: 13 scenarios across 6 requirements.

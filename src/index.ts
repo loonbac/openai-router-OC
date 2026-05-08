@@ -42,6 +42,7 @@ import {
   markWorkspaceDeactivated
 } from './rotation.js'
 import { getDefaultModels } from './models.js'
+import { mapContentToCodex, contentToString, looksLikeOpenAIContentArray } from './content-transform.js'
 
 // Router lifecycle event notifier — assigned inside MultiAuthPlugin closure
 let notifyEvent: (title: string, message: string) => Promise<void> = async () => {}
@@ -148,7 +149,10 @@ function filterInput(input: unknown): unknown {
       if (item && typeof item === 'object' && item.role === 'assistant' && item.tool_calls) {
         const results: any[] = []
         if (item.content) {
-          results.push({ role: 'assistant', content: item.content })
+          const mapped = looksLikeOpenAIContentArray(item.content)
+            ? mapContentToCodex(item.content, 'assistant')
+            : item.content
+          results.push({ role: 'assistant', content: mapped })
         }
         for (const tc of item.tool_calls) {
           results.push({
@@ -538,7 +542,7 @@ function startInlineRouter(): ServerType {
       const input: Array<Record<string, any>> = []
       for (const msg of messages) {
         if (msg.role === 'system') {
-          instructions = msg.content
+          instructions = contentToString(msg.content)
           continue
         }
         if (msg.role === 'tool') {
@@ -551,7 +555,7 @@ function startInlineRouter(): ServerType {
         }
         if (msg.role === 'assistant' && msg.tool_calls) {
           if (msg.content) {
-            input.push({ role: 'assistant', content: msg.content })
+            input.push({ role: 'assistant', content: mapContentToCodex(msg.content, 'assistant') })
           }
           for (const tc of msg.tool_calls) {
             input.push({
@@ -563,7 +567,11 @@ function startInlineRouter(): ServerType {
           }
           continue
         }
-        input.push({ role: msg.role, content: msg.content })
+        if (msg.role === 'assistant') {
+          input.push({ role: 'assistant', content: mapContentToCodex(msg.content, 'assistant') })
+        } else {
+          input.push({ role: msg.role, content: mapContentToCodex(msg.content, msg.role) })
+        }
       }
 
       const codexBody: Record<string, any> = { model: normalizedModel, input, instructions, stream: true, store: false }

@@ -1,0 +1,55 @@
+# Archive Report: support-codex-image-input-content
+
+**Change**: support-codex-image-input-content
+**Project**: openai-router-oc
+**Archived At**: 2026-05-08T05:30:00Z
+**Mode**: engram
+**Verdict at Archive**: PASS WITH WARNINGS (no critical issues)
+
+---
+
+## Artifact Lineage
+
+| Artifact | Observation ID | On Disk | Notes |
+|----------|---------------|---------|-------|
+| explore | #536 | ❌ | Explored root cause: array-in-text-field bug at 6 call sites |
+| proposal | #537 | ❌ | Proposed shared helper approach |
+| spec | #538 | ✅ `sdd/…/spec` | 6 requirements, 13 scenarios |
+| design | #539 | ❌ | Architected `src/content-transform.ts` with 4 key decisions |
+| tasks | #540 | ✅ `sdd/…/tasks` | 8 tasks across 3 phases |
+| apply-progress | #541 | ✅ `sdd/…/apply-progress` | 8/8 tasks complete, 2 issues found |
+| verify-report | #543 | ✅ `sdd/…/verify-report` | PASS WITH WARNINGS, 19/19 tests pass |
+
+---
+
+## Summary
+
+**What was built**: Shared multimodal content mapping for Codex Responses API, extracted into `src/content-transform.ts` with three exports: `mapContentToCodex()`, `contentToString()`, and `looksLikeOpenAIContentArray()`. Both `src/index.ts` and `src/router.ts` updated to use the shared helper at all 6 call sites, plus `filterInput()` guard.
+
+**Root cause**: `text: msg.content` assumed string, crashed when OpenCode sent multimodal content arrays.
+
+**Files changed**:
+- `src/content-transform.ts` — Created (shared helper + type exports)
+- `src/index.ts` — Modified (imported helper, updated 3 call sites + filterInput + system extraction)
+- `src/router.ts` — Modified (imported helper, updated 3 call sites + system extraction)
+- `tests/unit/content-transform.test.ts` — Created (19 tests)
+- `jest.config.js` — Created (ESM + ts-jest)
+
+**Test results**: 19/19 passing, `tsc --noEmit` clean.
+
+**Key learnings**:
+- `filterInput` needed a `looksLikeOpenAIContentArray()` guard to avoid double-transforming already-Codex-formatted arrays
+- Role semantics matter: `user` → `input_text`, `assistant` → `output_text`, system → string flattening
+- Missing test infrastructure (jest.config.js) had to be bootstrapped
+
+---
+
+## Verdict at Archive
+
+**PASS WITH WARNINGS** — 2 partial scenarios (tool_calls expansion parity, cross-file behavioral parity test) structurally guaranteed by shared code. No critical issues. Ready for archive.
+
+---
+
+## SDD Cycle Complete
+
+The change has been fully planned (explore → proposal → spec → design), implemented (8/8 tasks), verified (19 tests, tsc clean), and archived. Ready for the next change.

@@ -20,6 +20,7 @@ import {
 } from './rotation.js'
 import { getDefaultModels } from './models.js'
 import { getForceState, isForceActive } from './force-mode.js'
+import { mapContentToCodex, contentToString } from './content-transform.js'
 import { getRuntimeSettings } from './settings.js'
 import {
   extractRateLimitUpdate,
@@ -448,7 +449,7 @@ app.post('/v1/chat/completions', async (c: Context) => {
 
     for (const msg of messages) {
       if (msg.role === 'system') {
-        instructions = msg.content
+        instructions = contentToString(msg.content)
         continue
       }
       if (msg.role === 'tool') {
@@ -461,7 +462,7 @@ app.post('/v1/chat/completions', async (c: Context) => {
       }
       if (msg.role === 'assistant' && msg.tool_calls) {
         if (msg.content) {
-          input.push({ role: 'assistant', content: msg.content })
+          input.push({ role: 'assistant', content: mapContentToCodex(msg.content, 'assistant') })
         }
         for (const tc of msg.tool_calls) {
           input.push({
@@ -473,7 +474,11 @@ app.post('/v1/chat/completions', async (c: Context) => {
         }
         continue
       }
-      input.push({ role: msg.role, content: msg.content })
+      if (msg.role === 'assistant') {
+        input.push({ role: 'assistant', content: mapContentToCodex(msg.content, 'assistant') })
+      } else {
+        input.push({ role: msg.role, content: mapContentToCodex(msg.content, msg.role) })
+      }
     }
 
     const reasoningMatch = body.model?.match(/-(none|low|medium|high|xhigh)$/)
